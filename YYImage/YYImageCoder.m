@@ -16,7 +16,13 @@
 #import <Accelerate/Accelerate.h>
 #import <QuartzCore/QuartzCore.h>
 #import <MobileCoreServices/MobileCoreServices.h>
+
+#if __IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_9_0
 #import <AssetsLibrary/AssetsLibrary.h>
+#else
+#import <Photos/Photos.h>
+#endif
+
 #import <objc/runtime.h>
 #import <pthread.h>
 #import <zlib.h>
@@ -2790,9 +2796,24 @@ CGImageRef YYCGImageCreateWithWebPData(CFDataRef webpData,
     objc_setAssociatedObject(self, @selector(yy_isDecodedForDisplay), @(isDecodedForDisplay), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-- (void)yy_saveToAlbumWithCompletionBlock:(void(^)(NSURL *assetURL, NSError *error))completionBlock {
+#if  __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_9_0
+- (PHAsset *)_yy_getAssetFromlocalIdentifier:(NSString *)localIdentifier{
+    if(localIdentifier == nil){
+        NSLog(@"Cannot get asset from localID because it is nil");
+        return nil;
+    }
+    PHFetchResult *result = [PHAsset fetchAssetsWithLocalIdentifiers:@[localIdentifier] options:nil];
+    if(result.count){
+        return result[0];
+    }
+    return nil;
+}
+#endif
+
+- (void)yy_saveToAlbumWithCompletionBlock:(void(^)(id asset, NSError *error))completionBlock {
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSData *data = [self _yy_dataRepresentationForSystem:YES];
+        #if __IPHONE_OS_VERSION_MAX_ALLOWED < __IPHONE_9_0
         ALAssetsLibrary *library = [[ALAssetsLibrary alloc] init];
         [library writeImageDataToSavedPhotosAlbum:data metadata:nil completionBlock:^(NSURL *assetURL, NSError *error){
             if (!completionBlock) return;
@@ -2804,6 +2825,28 @@ CGImageRef YYCGImageCreateWithWebPData(CFDataRef webpData,
                 });
             }
         }];
+        #else
+        __block PHObjectPlaceholder *placeholderAsset=nil;
+        [[PHPhotoLibrary sharedPhotoLibrary] performChanges:^{
+            if (@available(iOS 9, *)) {
+                PHAssetCreationRequest *newAssetRequest = [PHAssetCreationRequest creationRequestForAsset];
+                [newAssetRequest addResourceWithType:PHAssetResourceTypePhoto data:data options:nil];
+                placeholderAsset = newAssetRequest.placeholderForCreatedAsset;
+            } else {
+                PHAssetChangeRequest *newAssetRequest = [PHAssetChangeRequest creationRequestForAssetFromImage:[UIImage imageWithData:data]];
+                placeholderAsset = newAssetRequest.placeholderForCreatedAsset;
+            }
+        } completionHandler:^(BOOL success, NSError * _Nullable error) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (success) {
+                    PHAsset *asset = [self _yy_getAssetFromlocalIdentifier:placeholderAsset.localIdentifier];
+                    if (completionBlock) completionBlock(asset, error);
+                } else {
+                    if (completionBlock) completionBlock(nil, error);
+                }
+            });
+        }];
+        #endif
     });
 }
 
